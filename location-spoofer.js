@@ -17,6 +17,9 @@
     mode: "response",
     latitude: 37.3349,
     longitude: -122.00902,
+    // 单位为度；任一项非空即忽略固定坐标，另一项未配置时按 0 偏移。
+    deltala: null,
+    deltalo: null,
     horizontalAccuracy: 39,
     verticalAccuracy: 1000,
     altitude: 530,
@@ -524,6 +527,19 @@
     cfg.mode = mode === "request" || mode === "prepare" || mode === "probe" || mode === "inspect" ? mode : "response";
     cfg.latitude = Number(cfg.latitude);
     cfg.longitude = Number(cfg.longitude);
+    var deltaKeys = ["deltala", "deltalo"];
+    for (var i = 0; i < deltaKeys.length; i += 1) {
+      var deltaKey = deltaKeys[i];
+      var deltaValue = cfg[deltaKey];
+      cfg[deltaKey] = deltaValue == null || String(deltaValue).trim() === "" ? null : Number(deltaValue);
+      if (cfg[deltaKey] != null && !Number.isFinite(cfg[deltaKey])) {
+        throw new Error("invalid " + deltaKey);
+      }
+    }
+    if (hasCoordinateOffset(cfg)) {
+      cfg.deltala = cfg.deltala == null ? 0 : cfg.deltala;
+      cfg.deltalo = cfg.deltalo == null ? 0 : cfg.deltalo;
+    }
     cfg.horizontalAccuracy = Math.trunc(Number(cfg.horizontalAccuracy));
     cfg.verticalAccuracy = Math.trunc(Number(cfg.verticalAccuracy));
     cfg.altitude = Math.trunc(Number(cfg.altitude));
@@ -538,13 +554,26 @@
       cfg.rawLimit = 0;
     }
 
-    if (!Number.isFinite(cfg.latitude) || cfg.latitude < -90 || cfg.latitude > 90) {
+    if (!hasCoordinateOffset(cfg) && (!Number.isFinite(cfg.latitude) || cfg.latitude < -90 || cfg.latitude > 90)) {
       throw new Error("invalid latitude");
     }
-    if (!Number.isFinite(cfg.longitude) || cfg.longitude < -180 || cfg.longitude > 180) {
+    if (!hasCoordinateOffset(cfg) && (!Number.isFinite(cfg.longitude) || cfg.longitude < -180 || cfg.longitude > 180)) {
       throw new Error("invalid longitude");
     }
     return cfg;
+  }
+
+  function hasCoordinateOffset(config) {
+    return config.deltala != null || config.deltalo != null;
+  }
+
+  function offsetCoordinate(field, delta, limit) {
+    // 在 1e-8 度整数坐标上相加，避免原坐标经过浮点往返后丢失精度。
+    var value = signedVarintFieldValue(field) + coordToInt(delta == null ? 0 : delta);
+    if (!Number.isFinite(value) || Math.abs(value) > limit * 100000000) {
+      throw new Error("offset coordinate out of range: field " + field.fieldNumber);
+    }
+    return value;
   }
 
   function patchLocation(locationPayload, config) {
@@ -566,9 +595,11 @@
     for (i = 0; i < fields.length; i += 1) {
       var field = fields[i];
       if (field.fieldNumber === 1 && field.wireType === 0) {
-        parts.push(makeVarintField(1, coordToInt(config.latitude)));
+        parts.push(makeVarintField(1, hasCoordinateOffset(config)
+          ? offsetCoordinate(field, config.deltala, 90) : coordToInt(config.latitude)));
       } else if (field.fieldNumber === 2 && field.wireType === 0) {
-        parts.push(makeVarintField(2, coordToInt(config.longitude)));
+        parts.push(makeVarintField(2, hasCoordinateOffset(config)
+          ? offsetCoordinate(field, config.deltalo, 180) : coordToInt(config.longitude)));
       } else if (field.fieldNumber === 3 && field.wireType === 0) {
         parts.push(makeVarintField(3, config.horizontalAccuracy));
       } else {
@@ -952,6 +983,8 @@
       "enabled",
       "latitude",
       "longitude",
+      "deltala",
+      "deltalo",
       "altitude",
       "address",
       "configHost",
@@ -1046,6 +1079,8 @@
       "enabled",
       "latitude",
       "longitude",
+      "deltala",
+      "deltalo",
       "altitude",
       "address",
       "configHost",
@@ -1304,6 +1339,8 @@
       "mode",
       "latitude",
       "longitude",
+      "deltala",
+      "deltalo",
       "address",
       "horizontalAccuracy",
       "verticalAccuracy",
@@ -1969,8 +2006,8 @@
       wifiCount: responseResult.wifiCount,
       cellCount: responseResult.cellCount,
       debug: config.debug,
-      targetLat: config.latitude,
-      targetLng: config.longitude
+      targetLat: hasCoordinateOffset(config) ? null : config.latitude,
+      targetLng: hasCoordinateOffset(config) ? null : config.longitude
     });
   }
 
@@ -2011,10 +2048,10 @@
         if (hasResponse) {
           if (config.debug) {
             console.log(
-              "Location spoofer intercept -> lat=" +
-                config.latitude +
-                ", lng=" +
-                config.longitude +
+              "Location spoofer intercept -> " +
+                (hasCoordinateOffset(config)
+                  ? "deltala=" + config.deltala + ", deltalo=" + config.deltalo
+                  : "lat=" + config.latitude + ", lng=" + config.longitude) +
                 ", url=" +
                 (($request && $request.url) || "<none>")
             );
